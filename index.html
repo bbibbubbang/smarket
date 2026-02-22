@@ -53,11 +53,47 @@
         ground.rotation.x = -Math.PI / 2;
         scene.add(ground);
 
-        // 4. 플레이어 (파란색 원기둥)
-        const playerGeo = new THREE.CylinderGeometry(0.5, 0.5, 2, 16);
-        const playerMat = new THREE.MeshStandardMaterial({ color: 0x2196f3 });
-        const player = new THREE.Mesh(playerGeo, playerMat);
-        player.position.y = 1; // 바닥 위로 올림
+        // 4. 플레이어 (사람 형태)
+        const player = new THREE.Group();
+
+        // 머리
+        const headGeo = new THREE.SphereGeometry(0.3, 16, 16);
+        const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // 살구색
+        const head = new THREE.Mesh(headGeo, headMat);
+        head.position.y = 1.7; // 몸통 위에 위치
+        player.add(head);
+
+        // 몸통
+        const bodyGeo = new THREE.BoxGeometry(0.6, 0.8, 0.4);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2196f3 }); // 파란 옷
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 1.0; // 다리 위에 위치
+        player.add(body);
+
+        // 팔 (왼쪽)
+        const armGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2);
+        const armMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // 살구색
+        const leftArm = new THREE.Mesh(armGeo, armMat);
+        leftArm.position.set(-0.5, 1.0, 0); // 몸통 옆
+        player.add(leftArm);
+
+        // 팔 (오른쪽)
+        const rightArm = new THREE.Mesh(armGeo, armMat);
+        rightArm.position.set(0.5, 1.0, 0); // 몸통 옆
+        player.add(rightArm);
+
+        // 다리 (왼쪽)
+        const legGeo = new THREE.BoxGeometry(0.25, 0.8, 0.25);
+        const legMat = new THREE.MeshStandardMaterial({ color: 0x333333 }); // 검은 바지
+        const leftLeg = new THREE.Mesh(legGeo, legMat);
+        leftLeg.position.set(-0.2, 0.4, 0); // 바닥에서 시작
+        player.add(leftLeg);
+
+        // 다리 (오른쪽)
+        const rightLeg = new THREE.Mesh(legGeo, legMat);
+        rightLeg.position.set(0.2, 0.4, 0); // 바닥에서 시작
+        player.add(rightLeg);
+
         scene.add(player);
 
         // 5. 몬스터 (빨간색 상자)
