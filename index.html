@@ -2,434 +2,248 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>3D 모바일 쿼터뷰 게임</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>3D 모바일 슈퍼마켓</title>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden; /* 스크롤 방지 */
-            background-color: #222;
-            touch-action: none; /* 모바일 브라우저의 기본 터치 액션(새로고침 등) 방지 */
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #2c3e50; 
+            touch-action: none; /* 브라우저 기본 터치 액션 막기 */
         }
-        #ui-layer {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: white;
-            font-family: sans-serif;
-            pointer-events: none;
-            text-shadow: 1px 1px 2px black;
+        /* UI 스타일 */
+        #ui-layer { 
+            position: absolute; 
+            top: 20px; 
+            left: 20px; 
+            color: white; 
+            font-family: 'Segoe UI', sans-serif; 
+            font-size: 20px; 
+            font-weight: bold; 
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
+            pointer-events: none; 
+        }
+        /* 가상 조이스틱 영역 */
+        #joystick-zone { 
+            position: absolute; 
+            bottom: 8%; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            width: 140px; 
+            height: 140px; 
+            background: rgba(255, 255, 255, 0.2); 
+            border-radius: 50%; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            touch-action: none; 
+            border: 2px solid rgba(255,255,255,0.4);
+        }
+        /* 조이스틱 손잡이 */
+        #joystick-knob { 
+            width: 60px; 
+            height: 60px; 
+            background: rgba(255, 255, 255, 0.8); 
+            border-radius: 50%; 
+            position: absolute; 
+            pointer-events: none; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
         }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
+
     <div id="ui-layer">
-        화면을 터치하고 드래그해서 이동해봐!<br>
-        <button id="order-btn" style="margin-top: 10px; padding: 10px 20px; font-size: 16px; pointer-events: auto; cursor: pointer;">상품 주문 (Order)</button>
+        소지금: <span id="money">0</span>원<br>
+        <span style="font-size: 14px; color: #f1c40f;">하단 원을 터치해 이동해 봐!</span>
     </div>
 
-    <script type="module">
-        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    <div id="joystick-zone">
+        <div id="joystick-knob"></div>
+    </div>
 
-        // 1. 씬, 카메라, 렌더러 설정
+    <script>
+        // 1. Three.js 기본 설정 (씬, 카메라, 렌더러)
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87ceeb); // 하늘색 배경
+        scene.background = new THREE.Color(0xecf0f1);
 
-        // 세로 화면에 맞춘 카메라 비율
-        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        // 직교 카메라(Orthographic)를 사용해 완벽한 쿼터뷰(아이소메트릭) 느낌 연출
+        const aspect = window.innerWidth / window.innerHeight;
+        const d = 12; // 카메라 시야 범위
+        const camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
         
+        // 쿼터뷰 각도 설정 (우측 상단에서 대각선 아래로 바라봄)
+        camera.position.set(20, 20, 20);
+        camera.lookAt(scene.position);
+
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
+        // 그림자 활성화
+        renderer.shadowMap.enabled = true;
         document.body.appendChild(renderer.domElement);
 
-        // 2. 조명 추가
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(10, 20, 10);
-        scene.add(dirLight);
+        // 2. 조명 설정
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(10, 20, 10);
+        light.castShadow = true;
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6)); // 전체를 밝혀주는 기본 빛
 
-        // 3. 환경 및 게임 오브젝트 (Environment & Game Objects)
+        // 3. 맵 구현 (바닥)
+        const floorGeo = new THREE.PlaneGeometry(50, 50);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0xbdc3c7 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
 
-        // Game State
-        const boxes = [];
-        const shelves = [];
+        // 장애물(진열대, 계산대) 배열
+        const obstacles = [];
 
-        // Product Definitions
-        const PRODUCTS = {
-            CEREAL: { id: 'cereal', name: '시리얼', color: 0xffd700 }, // Gold
-            MILK: { id: 'milk', name: '우유', color: 0xffffff },    // White
-            SODA: { id: 'soda', name: '탄산음료', color: 0xff0000 } // Red
-        };
-
-        // Classes / Factories
-        class Box {
-            constructor(productType, quantity) {
-                this.product = productType;
-                this.quantity = quantity;
-                this.mesh = new THREE.Mesh(
-                    new THREE.BoxGeometry(0.5, 0.5, 0.5),
-                    new THREE.MeshStandardMaterial({ color: productType.color })
-                );
-                this.mesh.castShadow = true;
-                this.mesh.userData.box = this; // Link back to object
-            }
+        // 물건 만들기 함수
+        function createBox(w, h, depth, x, z, color) {
+            const geo = new THREE.BoxGeometry(w, h, depth);
+            const mat = new THREE.MeshStandardMaterial({ color: color });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, h / 2, z);
+            mesh.castShadow = true;
+            scene.add(mesh);
+            obstacles.push(mesh);
+            return mesh;
         }
 
-        class Shelf {
-            constructor(position) {
-                this.capacity = 20;
-                this.currentCount = 0;
-                this.product = null; // Type of product currently on shelf
+        // 진열대 세팅
+        createBox(4, 3, 1.5, -4, -2, 0xd35400); // 좌측 진열대 1
+        createBox(4, 3, 1.5, -4, 3, 0xd35400);  // 좌측 진열대 2
+        createBox(4, 3, 1.5, 4, -2, 0xd35400);  // 우측 진열대
+        // 계산대 세팅
+        createBox(3, 1.5, 2, 4, 5, 0x2c3e50);
 
-                this.mesh = new THREE.Group();
-                this.mesh.position.copy(position);
-
-                // Rack Structure
-                const rackGeo = new THREE.BoxGeometry(2, 2, 0.5);
-                const rackMat = new THREE.MeshStandardMaterial({ color: 0x8b4513 }); // Brown
-                const rack = new THREE.Mesh(rackGeo, rackMat);
-                rack.position.y = 1;
-                this.mesh.add(rack);
-
-                // Shelves (Visual planes)
-                const shelfMat = new THREE.MeshStandardMaterial({ color: 0xa0522d });
-                const shelf1 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 0.5), shelfMat);
-                shelf1.position.set(0, 0.5, 0);
-                this.mesh.add(shelf1);
-
-                const shelf2 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 0.5), shelfMat);
-                shelf2.position.set(0, 1.0, 0);
-                this.mesh.add(shelf2);
-
-                const shelf3 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 0.5), shelfMat);
-                shelf3.position.set(0, 1.5, 0);
-                this.mesh.add(shelf3);
-
-                // Visual Items Group
-                this.visualItems = new THREE.Group();
-                this.mesh.add(this.visualItems);
-
-                this.mesh.userData.shelf = this;
-                scene.add(this.mesh);
-                shelves.push(this);
-            }
-
-            // Visual Update Method (Simplified for now)
-            updateVisuals() {
-                // Clear existing
-                while(this.visualItems.children.length > 0){
-                    this.visualItems.remove(this.visualItems.children[0]);
-                }
-
-                // Add items based on count
-                if (!this.product) return;
-
-                const rows = 3;
-
-                for(let i=0; i<this.currentCount; i++) {
-                    const itemMesh = new THREE.Mesh(
-                        new THREE.BoxGeometry(0.2, 0.25, 0.2),
-                        new THREE.MeshStandardMaterial({ color: this.product.color })
-                    );
-
-                    // Simple logic to distribute items on 3 shelves
-                    const rowIndex = i % rows; // 0, 1, 2
-                    const colIndex = Math.floor(i / rows);
-
-                    // Positioning
-                    const x = -0.7 + (colIndex * 0.25);
-                    const y = 0.6 + (rowIndex * 0.5) + 0.125;
-
-                    // Avoid overflow visually
-                    if (x > 0.8) continue;
-
-                    itemMesh.position.set(x, y, 0.1);
-                    this.visualItems.add(itemMesh);
-                }
-            }
-        }
-
-        // Environment Setup
-        // Ground (Asphalt/Grass outside)
-        const groundGeo = new THREE.PlaneGeometry(100, 100);
-        const groundMat = new THREE.MeshStandardMaterial({ color: 0x555555 }); // Dark Gray
-        const ground = new THREE.Mesh(groundGeo, groundMat);
-        ground.rotation.x = -Math.PI / 2;
-        scene.add(ground);
-
-        // Store Floor (Inside)
-        const storeFloorGeo = new THREE.PlaneGeometry(15, 15);
-        const storeFloorMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee }); // Light Gray Tile
-        const storeFloor = new THREE.Mesh(storeFloorGeo, storeFloorMat);
-        storeFloor.rotation.x = -Math.PI / 2;
-        storeFloor.position.y = 0.01; // Slightly above ground
-        scene.add(storeFloor);
-
-        // Walls (Simple bounds)
-        const wallMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
-        const wall1 = new THREE.Mesh(new THREE.BoxGeometry(15, 3, 0.5), wallMat);
-        wall1.position.set(0, 1.5, -7.5); // Back
-        scene.add(wall1);
-
-        const wall2 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 3, 15), wallMat);
-        wall2.position.set(-7.5, 1.5, 0); // Left
-        scene.add(wall2);
-
-        // Delivery Zone (Yellow Striped Area)
-        const deliveryZoneGeo = new THREE.PlaneGeometry(5, 5);
-        const deliveryZoneMat = new THREE.MeshStandardMaterial({ color: 0xffff00 });
-        const deliveryZone = new THREE.Mesh(deliveryZoneGeo, deliveryZoneMat);
-        deliveryZone.rotation.x = -Math.PI / 2;
-        deliveryZone.position.set(10, 0.02, 0); // To the right of the store
-        scene.add(deliveryZone);
-
-        // Instantiate Shelves
-        new Shelf(new THREE.Vector3(-4, 0, -5));
-        new Shelf(new THREE.Vector3(0, 0, -5));
-        new Shelf(new THREE.Vector3(4, 0, -5));
-
-
-        // 4. 플레이어 (사람 형태)
-        const player = new THREE.Group();
-
-        // 머리
-        const headGeo = new THREE.SphereGeometry(0.3, 16, 16);
-        const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // 살구색
-        const head = new THREE.Mesh(headGeo, headMat);
-        head.position.y = 1.7; // 몸통 위에 위치
-        player.add(head);
-
-        // 몸통
-        const bodyGeo = new THREE.BoxGeometry(0.6, 0.8, 0.4);
-        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2196f3 }); // 파란 옷
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
-        body.position.y = 1.0; // 다리 위에 위치
-        player.add(body);
-
-        // 팔 (왼쪽)
-        const armGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2);
-        const armMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // 살구색
-        const leftArm = new THREE.Mesh(armGeo, armMat);
-        leftArm.position.set(-0.5, 1.0, 0); // 몸통 옆
-        player.add(leftArm);
-
-        // 팔 (오른쪽)
-        const rightArm = new THREE.Mesh(armGeo, armMat);
-        rightArm.position.set(0.5, 1.0, 0); // 몸통 옆
-        player.add(rightArm);
-
-        // 다리 (왼쪽)
-        const legGeo = new THREE.BoxGeometry(0.25, 0.8, 0.25);
-        const legMat = new THREE.MeshStandardMaterial({ color: 0x333333 }); // 검은 바지
-        const leftLeg = new THREE.Mesh(legGeo, legMat);
-        leftLeg.position.set(-0.2, 0.4, 0); // 바닥에서 시작
-        player.add(leftLeg);
-
-        // 다리 (오른쪽)
-        const rightLeg = new THREE.Mesh(legGeo, legMat);
-        rightLeg.position.set(0.2, 0.4, 0); // 바닥에서 시작
-        player.add(rightLeg);
-
+        // 4. 플레이어 캐릭터
+        const playerGeo = new THREE.CylinderGeometry(0.5, 0.5, 2, 16);
+        const playerMat = new THREE.MeshStandardMaterial({ color: 0x3498db });
+        const player = new THREE.Mesh(playerGeo, playerMat);
+        player.position.set(0, 1, 6);
+        player.castShadow = true;
         scene.add(player);
 
-        // 6. 쿼터뷰 카메라 위치 설정 (플레이어 기준)
-        const cameraOffset = new THREE.Vector3(0, 15, 15);
+        // 5. NPC (손님) 캐릭터
+        const npcGeo = new THREE.CylinderGeometry(0.5, 0.5, 2, 16);
+        const npcMat = new THREE.MeshStandardMaterial({ color: 0xe74c3c });
+        const npc = new THREE.Mesh(npcGeo, npcMat);
+        npc.position.set(-5, 1, 8);
+        npc.castShadow = true;
+        scene.add(npc);
+        
+        let npcTargets = [
+            new THREE.Vector3(-2, 1, -2), // 진열대 앞 1
+            new THREE.Vector3(2, 1, 5),   // 계산대 앞
+            new THREE.Vector3(-5, 1, 8)   // 입구
+        ];
+        let currentTargetIdx = 0;
 
-        // 7. 터치 컨트롤 로직 (터치한 곳 기준 360도 이동)
-        let isTouching = false;
-        let startTouch = { x: 0, y: 0 };
-        let moveVector = new THREE.Vector3(0, 0, 0);
-        const playerSpeed = 0.15;
+        // 6. 가상 조이스틱 로직 (360도 이동)
+        const zone = document.getElementById('joystick-zone');
+        const knob = document.getElementById('joystick-knob');
+        let isDragging = false;
+        let moveVector = new THREE.Vector2(0, 0);
+        const maxRadius = 50; // 조이스틱 최대 이동 반경
 
-        window.addEventListener('touchstart', (e) => {
-            isTouching = true;
-            startTouch.x = e.touches[0].clientX;
-            startTouch.y = e.touches[0].clientY;
+        zone.addEventListener('touchstart', (e) => { isDragging = true; updateJoystick(e.touches[0]); });
+        zone.addEventListener('touchmove', (e) => { if(isDragging) updateJoystick(e.touches[0]); }, {passive: false});
+        zone.addEventListener('touchend', () => { 
+            isDragging = false; 
+            knob.style.transform = `translate(0px, 0px)`;
+            moveVector.set(0, 0); // 손을 떼면 멈춤
         });
 
-        window.addEventListener('touchmove', (e) => {
-            if (!isTouching) return;
+        function updateJoystick(touch) {
+            const rect = zone.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
             
-            const currentX = e.touches[0].clientX;
-            const currentY = e.touches[0].clientY;
+            let dx = touch.clientX - centerX;
+            let dy = touch.clientY - centerY;
             
-            // 터치 시작점과 현재 위치의 차이 계산
-            const dx = currentX - startTouch.x;
-            const dy = currentY - startTouch.y;
-            
-            // 360도 방향 각도 구하기
-            const angle = Math.atan2(dy, dx);
-            
-            // 드래그 거리에 따라 속도 제한 (가상 조이스틱 느낌)
             const distance = Math.sqrt(dx * dx + dy * dy);
-            const speedRatio = Math.min(distance / 50, 1); // 50픽셀 이상 드래그하면 최고 속도
-
-            // 2D 화면의 방향을 3D 공간의 X, Z축 이동으로 변환
-            moveVector.x = Math.cos(angle) * playerSpeed * speedRatio;
-            moveVector.z = Math.sin(angle) * playerSpeed * speedRatio;
+            if (distance > maxRadius) {
+                dx = (dx / distance) * maxRadius;
+                dy = (dy / distance) * maxRadius;
+            }
             
-            // 캐릭터가 이동하는 방향을 바라보게 하기
-            player.rotation.y = -angle + Math.PI / 2; 
-        });
-
-        window.addEventListener('touchend', () => {
-            isTouching = false;
-            moveVector.set(0, 0, 0); // 터치를 떼면 멈춤
-        });
-
-        // 마우스 컨트롤 지원 (PC 테스트용)
-        window.addEventListener('mousedown', (e) => {
-            isTouching = true;
-            startTouch.x = e.clientX;
-            startTouch.y = e.clientY;
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!isTouching) return;
-
-            const currentX = e.clientX;
-            const currentY = e.clientY;
-
-            const dx = currentX - startTouch.x;
-            const dy = currentY - startTouch.y;
-
-            const angle = Math.atan2(dy, dx);
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            const speedRatio = Math.min(distance / 50, 1);
-
-            moveVector.x = Math.cos(angle) * playerSpeed * speedRatio;
-            moveVector.z = Math.sin(angle) * playerSpeed * speedRatio;
-
-            player.rotation.y = -angle + Math.PI / 2;
-        });
-
-        window.addEventListener('mouseup', () => {
-            isTouching = false;
-            moveVector.set(0, 0, 0);
-        });
-
-        // 창 크기 변경 시 대응
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // 8. 게임 로직 (Game Logic)
-
-        // 주문 시스템
-        function spawnBox() {
-            const types = Object.values(PRODUCTS);
-            const randomType = types[Math.floor(Math.random() * types.length)];
-            const box = new Box(randomType, 20); // 수량 20개
-
-            // 배송 구역 내 랜덤 위치
-            const x = 10 + (Math.random() - 0.5) * 3;
-            const z = (Math.random() - 0.5) * 3;
-
-            box.mesh.position.set(x, 0.25, z);
-            scene.add(box.mesh);
-            boxes.push(box);
-            console.log('Box spawned:', randomType.name);
+            knob.style.transform = `translate(${dx}px, ${dy}px)`;
+            
+            // 이동 속도 조절
+            moveVector.x = dx * 0.003;
+            moveVector.y = dy * 0.003;
         }
 
-        document.getElementById('order-btn').addEventListener('click', (e) => {
-            e.stopPropagation(); // 터치/클릭 이벤트 전파 방지 (이동 방지)
-            spawnBox();
-        });
+        // 카메라가 45도 틀어져 있으므로, 입력 벡터를 회전시켜서 직관적인 조작을 만듦
+        const angleOffset = Math.PI / 4; 
 
-        // 상호작용 로직
-        player.userData.carrying = null;
-
-        function checkPickup() {
-            if (player.userData.carrying) return; // 이미 들고 있으면 패스
-
-            for (let i = 0; i < boxes.length; i++) {
-                const box = boxes[i];
-                // 플레이어의 자식(들고 있는 상태)이면 패스
-                if (box.mesh.parent === player) continue;
-
-                const dist = player.position.distanceTo(box.mesh.position);
-                if (dist < 1.5) {
-                    // 줍기 (Pick up)
-                    player.userData.carrying = box;
-
-                    // 플레이어에게 부착 (머리 위)
-                    box.mesh.position.set(0, 2.5, 0);
-                    player.add(box.mesh);
-                    break;
-                }
-            }
-        }
-
-        let lastStockTime = 0;
-
-        function checkStocking(time) {
-            if (!player.userData.carrying) return; // 들고 있는게 없으면 패스
-            if (time - lastStockTime < 200) return; // 0.2초 딜레이
-
-            const box = player.userData.carrying;
-
-            for (const shelf of shelves) {
-                // 선반 위치와의 거리 (선반은 Group이므로 worldPosition 확인 필요하지만, 초기 위치 고정이므로 position 사용)
-                // 정확하게 하려면 mesh.getWorldPosition()을 써야 하지만 여기선 position이 world임.
-                const dist = player.position.distanceTo(shelf.mesh.position);
-
-                if (dist < 2.5) {
-                    // 호환성 체크 (빈 선반이거나 같은 상품)
-                    if (shelf.product && shelf.product.id !== box.product.id) continue;
-                    if (shelf.currentCount >= shelf.capacity) continue; // 꽉 참
-
-                    // 진열 시작
-                    if (shelf.currentCount === 0) {
-                        shelf.product = box.product;
-                    }
-
-                    shelf.currentCount++;
-                    box.quantity--;
-
-                    shelf.updateVisuals();
-                    lastStockTime = time;
-
-                    // 상자가 비었으면 제거
-                    if (box.quantity <= 0) {
-                        player.remove(box.mesh);
-                        player.userData.carrying = null;
-
-                        // 배열에서 제거
-                        const idx = boxes.indexOf(box);
-                        if (idx > -1) boxes.splice(idx, 1);
-
-                        // Scene에서는 이미 player에서 remove 했으므로 OK (player가 scene의 일부)
-                        // 메모리 해제는 JS 가비지 컬렉터가 처리
-                    }
-                    break;
-                }
-            }
-        }
-
-        // 9. 애니메이션 루프 (매 프레임마다 실행)
-        function animate(time) {
+        // 7. 게임 루프 (업데이트 & 렌더링)
+        function animate() {
             requestAnimationFrame(animate);
 
-            // 게임 로직 업데이트
-            checkPickup();
-            checkStocking(time);
+            // 플레이어 이동 로직
+            if (isDragging) {
+                // 화면의 x, y 드래그를 3D 공간의 x, z로 변환 (카메라 시점에 맞게 45도 회전)
+                const rotatedX = moveVector.x * Math.cos(angleOffset) + moveVector.y * Math.sin(angleOffset);
+                const rotatedZ = -moveVector.x * Math.sin(angleOffset) + moveVector.y * Math.cos(angleOffset);
+                
+                const nextX = player.position.x + rotatedX;
+                const nextZ = player.position.z + rotatedZ;
 
-            // 플레이어 이동
-            player.position.add(moveVector);
+                // 충돌 감지 (AABB 방식)
+                let collision = false;
+                const playerBox = new THREE.Box3().setFromObject(player);
+                playerBox.translate(new THREE.Vector3(rotatedX, 0, rotatedZ)); // 다음 이동할 위치 미리 계산
 
-            // 카메라가 플레이어를 따라가게 설정 (쿼터뷰 유지)
-            camera.position.x = player.position.x + cameraOffset.x;
-            camera.position.y = player.position.y + cameraOffset.y;
-            camera.position.z = player.position.z + cameraOffset.z;
+                for (let obs of obstacles) {
+                    const obsBox = new THREE.Box3().setFromObject(obs);
+                    if (playerBox.intersectsBox(obsBox)) {
+                        collision = true;
+                        break;
+                    }
+                }
+
+                if (!collision) {
+                    player.position.x = nextX;
+                    player.position.z = nextZ;
+                }
+            }
+
+            // NPC 이동 로직 (간단한 웨이포인트 이동)
+            let targetPos = npcTargets[currentTargetIdx];
+            if (npc.position.distanceTo(targetPos) > 0.1) {
+                // 목표를 향해 조금씩 이동 (Lerp)
+                npc.position.lerp(targetPos, 0.02);
+            } else {
+                // 목표 도달 시 다음 장소로
+                currentTargetIdx = (currentTargetIdx + 1) % npcTargets.length;
+            }
+
+            // 카메라가 플레이어를 부드럽게 따라가도록 설정
+            camera.position.x = player.position.x + 20;
+            camera.position.z = player.position.z + 20;
             camera.lookAt(player.position);
 
             renderer.render(scene, camera);
         }
+        
+        animate();
 
-        animate(0);
+        // 8. 모바일 화면 회전이나 크기 변경 시 대응
+        window.addEventListener('resize', () => {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.left = -d * aspect;
+            camera.right = d * aspect;
+            camera.top = d;
+            camera.bottom = -d;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
     </script>
 </body>
 </html>
