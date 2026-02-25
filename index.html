@@ -162,6 +162,7 @@
 <div id="landscape-warning">
     <h1>Please Rotate Your Device</h1>
     <p>This game is best played in Landscape Mode.</p>
+    <button id="force-fullscreen" class="game-btn">Go Fullscreen</button>
 </div>
 
 <div id="game-container">
@@ -247,7 +248,9 @@
 
     // Creating walls
     createWall(20, 4, 1, 0, 2, -10); // Back
-    createWall(20, 4, 1, 0, 2, 10);  // Front
+    // Front Wall with Door Gap (4 units wide)
+    createWall(8, 4, 1, -6, 2, 10);  // Front Left
+    createWall(8, 4, 1, 6, 2, 10);   // Front Right
     createWall(1, 4, 20, -10, 2, 0); // Left
     createWall(1, 4, 20, 10, 2, 0);  // Right
 
@@ -280,15 +283,31 @@
 
     function createShelf(x, z, rotationY = 0) {
         const group = new THREE.Group();
-        const geometry = new THREE.BoxGeometry(4, 2, 1);
         const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
-        const shelf = new THREE.Mesh(geometry, material);
-        shelf.position.y = 1;
-        shelf.castShadow = true;
-        shelf.receiveShadow = true;
-        shelf.userData = { type: 'shelf' }; // Identify as shelf for raycasting
 
-        // For collision
+        // Create 4 tiers
+        for (let i = 1; i <= 4; i++) {
+            const shelfGeo = new THREE.BoxGeometry(4, 0.05, 1);
+            const shelf = new THREE.Mesh(shelfGeo, material);
+            // Height 2 total. Tiers at 0.5, 1.0, 1.5, 2.0
+            shelf.position.y = i * 0.5;
+            shelf.castShadow = true;
+            shelf.receiveShadow = true;
+            shelf.userData = { type: 'shelf', tier: i };
+            group.add(shelf);
+        }
+
+        // Vertical supports (sides)
+        const supportGeo = new THREE.BoxGeometry(0.1, 2, 1);
+        const leftSupport = new THREE.Mesh(supportGeo, material);
+        leftSupport.position.set(-1.95, 1, 0);
+        group.add(leftSupport);
+
+        const rightSupport = new THREE.Mesh(supportGeo, material);
+        rightSupport.position.set(1.95, 1, 0);
+        group.add(rightSupport);
+
+        // For collision (Player can't walk through)
         const collisionBox = new THREE.Mesh(
             new THREE.BoxGeometry(4, 2, 1),
             new THREE.MeshBasicMaterial({ visible: false })
@@ -298,7 +317,6 @@
         scene.add(collisionBox);
         colliders.push(collisionBox);
 
-        group.add(shelf);
         group.position.set(x, 0, z);
         group.rotation.y = rotationY;
         group.userData = { type: 'shelfGroup' };
@@ -380,7 +398,7 @@
     const actionBtn = document.getElementById('action-btn');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
 
-    fullscreenBtn.addEventListener('click', () => {
+    const toggleFullscreen = () => {
         if (!document.fullscreenElement) {
             document.documentElement.requestFullscreen().then(() => {
                 if (screen.orientation && screen.orientation.lock) {
@@ -392,7 +410,10 @@
                 document.exitFullscreen();
             }
         }
-    });
+    };
+
+    fullscreenBtn.addEventListener('click', toggleFullscreen);
+    document.getElementById('force-fullscreen').addEventListener('click', toggleFullscreen);
 
     function updateMoney(amount) {
         money += amount;
@@ -426,10 +447,71 @@
         product.position.set(-8 + offsetX, 0.5, 8 + offsetZ);
         product.castShadow = true;
         product.receiveShadow = true;
-        product.userData = { type: 'product', price: 30 }; // Sell price
+        product.userData = { type: 'product', price: 30, isResting: false, velocity: new THREE.Vector3(0, 0, 0) }; // Sell price
 
         scene.add(product);
         products.push(product);
+    }
+
+    function getValidPlacement(target) {
+        if (!heldItem) return null;
+        if (!target) return null;
+
+        const type = target.userData.type;
+
+        // Raycast again to get precise point
+        raycaster.setFromCamera(center, camera);
+        const intersects = raycaster.intersectObject(target);
+        if (intersects.length === 0) return null;
+        const point = intersects[0].point;
+
+        if (type === 'shelf') {
+            const shelfGroup = target.parent;
+            if (!shelfGroup || shelfGroup.userData.type !== 'shelfGroup') return null;
+
+            // Convert to local space
+            const localPoint = shelfGroup.worldToLocal(point.clone());
+
+            // Snap Logic (Grid)
+            const snapX = Math.round(localPoint.x * 2) / 2;
+            const snapZ = Math.round(localPoint.z * 4) / 4;
+
+            // Clamp to stay on shelf
+            const clampedX = Math.max(-1.8, Math.min(1.8, snapX));
+            const clampedZ = Math.max(-0.4, Math.min(0.4, snapZ));
+
+            // Use the tier's Y position
+            const tierY = target.position.y;
+            localPoint.set(clampedX, tierY + 0.25, clampedZ);
+
+            // Convert back to world
+            const worldPos = localPoint.applyMatrix4(shelfGroup.matrixWorld);
+
+            // Check overlap
+            for (const p of products) {
+                if (p === heldItem) continue;
+                if (p.position.distanceTo(worldPos) < 0.4) {
+                    return null; // Occupied
+                }
+            }
+            return { pos: worldPos, rot: shelfGroup.rotation };
+        }
+        else if (type === 'floor') {
+            if (intersects[0].distance > 3) return null;
+            const worldPos = point.clone();
+            worldPos.y = 0.25;
+
+            // Check overlap
+             for (const p of products) {
+                if (p === heldItem) continue;
+                if (p.position.distanceTo(worldPos) < 0.4) {
+                    return null; // Occupied
+                }
+            }
+            return { pos: worldPos, rot: new THREE.Euler(0, 0, 0) };
+        }
+
+        return null;
     }
 
     // Action Button Logic
@@ -441,113 +523,77 @@
 
         if (type === 'customer' && interactTarget.userData.state === 'WAITING') {
             // Checkout Logic
-            updateMoney(30);
-            interactTarget.userData.state = 'LEAVING';
-            // Simple feedback
-            const feedback = document.createElement('div');
-            feedback.innerText = "+$30";
-            feedback.style.position = 'absolute';
-            feedback.style.top = '50%';
-            feedback.style.left = '50%';
-            feedback.style.color = 'green';
-            feedback.style.fontSize = '24px';
-            feedback.style.fontWeight = 'bold';
-            feedback.style.animation = 'fadeOut 1s forwards';
-            document.body.appendChild(feedback);
-            setTimeout(() => feedback.remove(), 1000);
+            if (interactTarget.userData.customer.hasItem) {
+                updateMoney(30);
+                interactTarget.userData.state = 'LEAVING';
+                // Feedback
+                const feedback = document.createElement('div');
+                feedback.innerText = "+$30";
+                feedback.style.position = 'absolute';
+                feedback.style.top = '50%';
+                feedback.style.left = '50%';
+                feedback.style.color = 'green';
+                feedback.style.fontSize = '24px';
+                feedback.style.fontWeight = 'bold';
+                feedback.style.animation = 'fadeOut 1s forwards';
+                document.body.appendChild(feedback);
+                setTimeout(() => feedback.remove(), 1000);
 
-            // Interaction complete, hide button immediately
-            interactTarget = null;
-            updateActionUI();
+                interactTarget = null;
+                updateActionUI();
+            }
         }
         else if (type === 'product' && !heldItem) {
             // Pick Up
             heldItem = interactTarget;
+            heldItem.userData.isResting = false; // Physics activation
 
             // Remove from products list so customers don't try to buy it from hand
+            // (Actually we keep it in list for physics loop, but handle 'held' state there)
+            // But existing code removed it. Let's keep it consistent: remove from scene parent, add to camera.
+
+            // Note: If we remove from products list, physics loop won't update it.
+            // But if it's child of camera, we don't need physics loop.
+            // When dropped, we add back to products list?
+            // The prompt implies gravity should apply. If held, no gravity.
+
+            // Let's ensure it IS in products list when dropped.
+            // Current code: `products.push(heldItem)` on drop.
+            // Current code: `products.splice(index, 1)` on pickup.
+            // This is fine.
+
             const index = products.indexOf(heldItem);
             if (index > -1) products.splice(index, 1);
 
-            // Attach to camera
-            scene.remove(heldItem); // It might be in scene
-            if (heldItem.parent) heldItem.parent.remove(heldItem); // Safety
+            scene.remove(heldItem);
+            if (heldItem.parent) heldItem.parent.remove(heldItem);
 
             camera.add(heldItem);
-            heldItem.position.set(0.3, -0.3, -0.5); // Hand position
+            heldItem.position.set(0.3, -0.3, -0.5);
             heldItem.rotation.set(0, 0, 0);
         }
-        else if (type === 'shelf' && heldItem) {
-            // Place on Shelf
-            const shelfMesh = interactTarget;
-            const shelfGroup = shelfMesh.parent;
+        else if ((type === 'shelf' || type === 'floor') && heldItem) {
+            // Place / Drop using getValidPlacement
+            const valid = getValidPlacement(interactTarget);
+            if (valid) {
+                camera.remove(heldItem);
+                scene.add(heldItem);
+                products.push(heldItem);
 
-            camera.remove(heldItem);
-            scene.add(heldItem);
-            products.push(heldItem); // Add back to products list
+                heldItem.position.copy(valid.pos);
+                heldItem.rotation.copy(valid.rot);
 
-            // Re-calculate intersection for precision
-            raycaster.setFromCamera(center, camera);
-            const intersects = raycaster.intersectObject(interactTarget);
-
-            if (intersects.length > 0 && shelfGroup && shelfGroup.userData.type === 'shelfGroup') {
-                const point = intersects[0].point;
-
-                // Convert to local space
-                const localPoint = shelfGroup.worldToLocal(point.clone());
-
-                // Snap Logic (Grid)
-                // Shelf width is 4 (local x -2 to 2), depth is 1 (local z -0.5 to 0.5)
-                // Snap to nearest 0.5 on X, and nearest 0.25 on Z
-                const snapX = Math.round(localPoint.x * 2) / 2;
-                const snapZ = Math.round(localPoint.z * 4) / 4;
-
-                // Clamp to stay on shelf
-                const clampedX = Math.max(-1.8, Math.min(1.8, snapX));
-                const clampedZ = Math.max(-0.4, Math.min(0.4, snapZ));
-
-                // Local Y top surface is at 2 (since shelf mesh is at y=1 with height 2)
-                localPoint.set(clampedX, 2.25, clampedZ);
-
-                // Convert back to world
-                const worldPos = localPoint.applyMatrix4(shelfGroup.matrixWorld);
-                heldItem.position.copy(worldPos);
-
-                // Align rotation with shelf
-                heldItem.rotation.copy(shelfGroup.rotation);
-            } else {
-                // Fallback (e.g. counter which is not a 'shelfGroup' or raw placement)
-                 if (intersects.length > 0) {
-                    const point = intersects[0].point;
-                    heldItem.position.set(point.x, point.y + 0.25, point.z);
+                if (type === 'shelf') {
+                    heldItem.userData.isResting = true; // Stay on shelf
                 } else {
-                    const shelfWorldPos = new THREE.Vector3();
-                    shelfMesh.getWorldPosition(shelfWorldPos);
-                    heldItem.position.set(shelfWorldPos.x, 2.25, shelfWorldPos.z);
+                    heldItem.userData.isResting = false; // Fall if dropped on floor (though it's at y=0.25, so loop will set resting)
                 }
-                heldItem.rotation.set(0, 0, 0);
+
+                heldItem = null;
             }
-
-            heldItem = null;
-        }
-        else if (type === 'floor' && heldItem) {
-            // Drop Logic
-             raycaster.setFromCamera(center, camera);
-             const intersects = raycaster.intersectObject(interactTarget);
-
-             if (intersects.length > 0) {
-                 if (intersects[0].distance > 3) return; // Too far to place
-
-                 camera.remove(heldItem);
-                 scene.add(heldItem);
-                 products.push(heldItem); // Add back to products list
-
-                 heldItem.position.copy(intersects[0].point);
-                 heldItem.position.y += 0.25;
-                 heldItem = null;
-             }
         }
 
-        updateActionUI(); // Refresh state immediately
+        updateActionUI();
     });
 
     function updateActionUI() {
@@ -584,6 +630,7 @@
             this.speed = 2.5; // Meters per second
             this.target = null;
             this.waitTime = 0;
+            this.hasItem = false;
 
             this.state = 'MOVING_TO_SHELF';
             this.findShelf();
@@ -640,6 +687,7 @@
                         const item = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), foundProduct.material);
                         item.position.set(0.3, 1, 0.3);
                         this.mesh.add(item);
+                        this.hasItem = true;
                     }
 
                     this.state = 'MOVING_TO_CHECKOUT';
@@ -659,13 +707,19 @@
                 // this.mesh.userData.state is updated by player click
                 if (this.mesh.userData.state === 'LEAVING') {
                     this.state = 'LEAVING';
-                    this.target = customerSpawnPoint.clone();
+                    // Move to door first (gap at z=10, x=0)
+                    this.target = new THREE.Vector3(0, 0, 10);
                 }
             }
             else if (this.state === 'LEAVING') {
                 if (this.moveTo(this.target, delta)) {
-                    this.despawn();
-                    return false; // Removed
+                    // If we reached the door, now move to spawn point to despawn
+                    if (this.target.z === 10) {
+                        this.target = customerSpawnPoint.clone();
+                    } else {
+                        this.despawn();
+                        return false; // Removed
+                    }
                 }
             }
             return true; // Still active
@@ -702,7 +756,7 @@
 
     // State
     const player = {
-        speed: 0.1,
+        speed: 0.05,
         velocity: new THREE.Vector3(),
         direction: new THREE.Vector3(),
         rotation: new THREE.Euler(0, 0, 0, 'YXZ')
@@ -878,24 +932,26 @@
             cashierTimer += delta;
             if (cashierTimer > cashierProcessTime) {
                 // Checkout!
-                updateMoney(30);
+                if (customerAtCheckout.customer.hasItem) {
+                    updateMoney(30);
+                    // Feedback
+                    const feedback = document.createElement('div');
+                    feedback.innerText = "+$30";
+                    feedback.style.position = 'absolute';
+                    feedback.style.top = '20%';
+                    feedback.style.left = '50%';
+                    feedback.style.transform = 'translateX(-50%)';
+                    feedback.style.color = 'green';
+                    feedback.style.fontSize = '24px';
+                    feedback.style.fontWeight = 'bold';
+                    feedback.style.animation = 'fadeOut 1s forwards';
+                    feedback.style.pointerEvents = 'none';
+                    document.body.appendChild(feedback);
+                    setTimeout(() => feedback.remove(), 1000);
+                }
+
                 customerAtCheckout.state = 'LEAVING';
                 customerAtCheckout.mesh.userData.state = 'LEAVING'; // Sync for other systems
-
-                // Feedback
-                const feedback = document.createElement('div');
-                feedback.innerText = "+$30";
-                feedback.style.position = 'absolute';
-                feedback.style.top = '20%';
-                feedback.style.left = '50%';
-                feedback.style.transform = 'translateX(-50%)';
-                feedback.style.color = 'green';
-                feedback.style.fontSize = '24px';
-                feedback.style.fontWeight = 'bold';
-                feedback.style.animation = 'fadeOut 1s forwards';
-                feedback.style.pointerEvents = 'none';
-                document.body.appendChild(feedback);
-                setTimeout(() => feedback.remove(), 1000);
 
                 cashierTimer = 0;
             }
@@ -908,6 +964,25 @@
         requestAnimationFrame(animate);
 
         const delta = clock.getDelta(); // Time between frames
+
+        // Physics Loop for Products
+        for (const p of products) {
+            // Held items are removed from this list, so this only affects free items
+            if (!p.userData.isResting) {
+                // Apply Gravity
+                if (!p.userData.velocity) p.userData.velocity = new THREE.Vector3(0,0,0);
+
+                p.userData.velocity.y -= 9.8 * delta;
+                p.position.addScaledVector(p.userData.velocity, delta);
+
+                // Floor Collision
+                if (p.position.y < 0.25) {
+                    p.position.y = 0.25;
+                    p.userData.velocity.y = 0;
+                    p.userData.isResting = true;
+                }
+            }
+        }
 
         updateCashier(delta);
 
@@ -1001,8 +1076,12 @@
                 actionBtn.style.display = 'block';
                 actionBtn.innerText = 'Pick Up';
             } else if ((type === 'shelf' || type === 'floor') && heldItem) {
-                actionBtn.style.display = 'block';
-                actionBtn.innerText = 'Place';
+                if (getValidPlacement(interactTarget)) {
+                    actionBtn.style.display = 'block';
+                    actionBtn.innerText = 'Place';
+                } else {
+                    actionBtn.style.display = 'none';
+                }
             } else {
                 actionBtn.style.display = 'none';
             }
