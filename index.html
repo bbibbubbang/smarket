@@ -116,6 +116,13 @@
             pointer-events: auto;
         }
 
+        #fullscreen-btn {
+            font-size: 12px;
+            padding: 5px 10px;
+            margin-right: auto;
+            margin-left: 10px;
+        }
+
         /* Buttons */
         .game-btn {
             background: rgba(255, 255, 255, 0.9);
@@ -161,6 +168,7 @@
     <div id="ui-layer">
         <div id="top-bar">
             <div id="money-display">Money: $100</div>
+            <button id="fullscreen-btn" class="game-btn">Full</button>
             <button id="order-btn" class="game-btn">Order ($20)</button>
         </div>
 
@@ -334,6 +342,29 @@
     spawnPad.userData = { type: 'spawnPad' };
     scene.add(spawnPad);
 
+    // Cashier NPC
+    const cashierGroup = new THREE.Group();
+    // Body
+    const cBodyGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.6, 12);
+    const cBodyMat = new THREE.MeshStandardMaterial({ color: 0x0000AA }); // Blue uniform
+    const cBody = new THREE.Mesh(cBodyGeo, cBodyMat);
+    cBody.position.y = 0.8;
+    cBody.castShadow = true;
+    cBody.receiveShadow = true;
+    cashierGroup.add(cBody);
+
+    // Head
+    const cHeadGeo = new THREE.SphereGeometry(0.25, 12, 12);
+    const cHeadMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
+    const cHead = new THREE.Mesh(cHeadGeo, cHeadMat);
+    cHead.position.y = 1.75;
+    cashierGroup.add(cHead);
+
+    // Position behind counter
+    cashierGroup.position.set(5.5, 0, 4.5);
+    cashierGroup.lookAt(2.5, 0, 7.5); // Face the customer standing point
+    scene.add(cashierGroup);
+
 
     // --- 3. Interaction & Economy ---
 
@@ -347,6 +378,21 @@
     const moneyDisplay = document.getElementById('money-display');
     const orderBtn = document.getElementById('order-btn');
     const actionBtn = document.getElementById('action-btn');
+    const fullscreenBtn = document.getElementById('fullscreen-btn');
+
+    fullscreenBtn.addEventListener('click', () => {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().then(() => {
+                if (screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock('landscape').catch(console.warn);
+                }
+            }).catch(console.warn);
+        } else {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
+        }
+    });
 
     function updateMoney(amount) {
         money += amount;
@@ -432,7 +478,8 @@
         }
         else if (type === 'shelf' && heldItem) {
             // Place on Shelf
-            const shelf = interactTarget;
+            const shelfMesh = interactTarget;
+            const shelfGroup = shelfMesh.parent;
 
             camera.remove(heldItem);
             scene.add(heldItem);
@@ -442,36 +489,62 @@
             raycaster.setFromCamera(center, camera);
             const intersects = raycaster.intersectObject(interactTarget);
 
-            if (intersects.length > 0) {
+            if (intersects.length > 0 && shelfGroup && shelfGroup.userData.type === 'shelfGroup') {
                 const point = intersects[0].point;
-                heldItem.position.set(point.x, point.y + 0.25, point.z);
+
+                // Convert to local space
+                const localPoint = shelfGroup.worldToLocal(point.clone());
+
+                // Snap Logic (Grid)
+                // Shelf width is 4 (local x -2 to 2), depth is 1 (local z -0.5 to 0.5)
+                // Snap to nearest 0.5 on X, and nearest 0.25 on Z
+                const snapX = Math.round(localPoint.x * 2) / 2;
+                const snapZ = Math.round(localPoint.z * 4) / 4;
+
+                // Clamp to stay on shelf
+                const clampedX = Math.max(-1.8, Math.min(1.8, snapX));
+                const clampedZ = Math.max(-0.4, Math.min(0.4, snapZ));
+
+                // Local Y top surface is at 2 (since shelf mesh is at y=1 with height 2)
+                localPoint.set(clampedX, 2.25, clampedZ);
+
+                // Convert back to world
+                const worldPos = localPoint.applyMatrix4(shelfGroup.matrixWorld);
+                heldItem.position.copy(worldPos);
+
+                // Align rotation with shelf
+                heldItem.rotation.copy(shelfGroup.rotation);
             } else {
-                const shelfWorldPos = new THREE.Vector3();
-                shelf.getWorldPosition(shelfWorldPos);
-                heldItem.position.set(shelfWorldPos.x, 2.25, shelfWorldPos.z);
+                // Fallback (e.g. counter which is not a 'shelfGroup' or raw placement)
+                 if (intersects.length > 0) {
+                    const point = intersects[0].point;
+                    heldItem.position.set(point.x, point.y + 0.25, point.z);
+                } else {
+                    const shelfWorldPos = new THREE.Vector3();
+                    shelfMesh.getWorldPosition(shelfWorldPos);
+                    heldItem.position.set(shelfWorldPos.x, 2.25, shelfWorldPos.z);
+                }
+                heldItem.rotation.set(0, 0, 0);
             }
 
-            heldItem.rotation.set(0, 0, 0);
             heldItem = null;
         }
         else if (type === 'floor' && heldItem) {
             // Drop Logic
-             camera.remove(heldItem);
-             scene.add(heldItem);
-             products.push(heldItem); // Add back to products list
-
              raycaster.setFromCamera(center, camera);
              const intersects = raycaster.intersectObject(interactTarget);
+
              if (intersects.length > 0) {
+                 if (intersects[0].distance > 3) return; // Too far to place
+
+                 camera.remove(heldItem);
+                 scene.add(heldItem);
+                 products.push(heldItem); // Add back to products list
+
                  heldItem.position.copy(intersects[0].point);
                  heldItem.position.y += 0.25;
-             } else {
-                 const worldPos = new THREE.Vector3();
-                 heldItem.getWorldPosition(worldPos);
-                 heldItem.position.copy(worldPos);
-                 heldItem.position.y = 0.25;
+                 heldItem = null;
              }
-             heldItem = null;
         }
 
         updateActionUI(); // Refresh state immediately
@@ -647,7 +720,7 @@
     let lookTouchId = null;
     let lastLookX = 0;
     let lastLookY = 0;
-    const lookSensitivity = 0.005;
+    const lookSensitivity = 0.015;
 
     // UI Elements
     const joystickContainer = document.getElementById('joystick-container');
@@ -787,10 +860,56 @@
     const clock = new THREE.Clock();
     console.log("Game initialized, starting loop");
 
+    // Cashier Logic
+    let cashierTimer = 0;
+    const cashierProcessTime = 2.0; // Seconds to process
+
+    function updateCashier(delta) {
+        // Find customer at checkout
+        let customerAtCheckout = null;
+        for (const c of customers) {
+            if (c.state === 'WAITING') {
+                customerAtCheckout = c;
+                break;
+            }
+        }
+
+        if (customerAtCheckout) {
+            cashierTimer += delta;
+            if (cashierTimer > cashierProcessTime) {
+                // Checkout!
+                updateMoney(30);
+                customerAtCheckout.state = 'LEAVING';
+                customerAtCheckout.mesh.userData.state = 'LEAVING'; // Sync for other systems
+
+                // Feedback
+                const feedback = document.createElement('div');
+                feedback.innerText = "+$30";
+                feedback.style.position = 'absolute';
+                feedback.style.top = '20%';
+                feedback.style.left = '50%';
+                feedback.style.transform = 'translateX(-50%)';
+                feedback.style.color = 'green';
+                feedback.style.fontSize = '24px';
+                feedback.style.fontWeight = 'bold';
+                feedback.style.animation = 'fadeOut 1s forwards';
+                feedback.style.pointerEvents = 'none';
+                document.body.appendChild(feedback);
+                setTimeout(() => feedback.remove(), 1000);
+
+                cashierTimer = 0;
+            }
+        } else {
+            cashierTimer = 0;
+        }
+    }
+
     function animate() {
         requestAnimationFrame(animate);
 
         const delta = clock.getDelta(); // Time between frames
+
+        updateCashier(delta);
 
         // Movement Logic
         if (moveForward !== 0 || moveRight !== 0) {
