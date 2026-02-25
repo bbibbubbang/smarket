@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>3D Supermarket Simulator</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none; /* Disables browser default gestures */
+        }
+
+        #game-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        /* Landscape orientation warning */
+        #landscape-warning {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            color: white;
+            font-family: sans-serif;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            flex-direction: column;
+            text-align: center;
+        }
+
+        @media screen and (orientation: portrait) {
+            #landscape-warning {
+                display: flex;
+            }
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none; /* Let clicks pass through to canvas if needed, but we handle touches specifically */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        /* Crosshair */
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 10px; height: 10px;
+            background-color: rgba(255, 255, 255, 0.8);
+            border: 1px solid black;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+        }
+
+        /* Controls Zones */
+        .control-zone {
+            position: absolute;
+            bottom: 0;
+            height: 60%; /* Bottom 60% of screen for controls */
+            width: 50%;
+            pointer-events: auto;
+            /* background: rgba(255, 0, 0, 0.1); Debugging */
+        }
+        #left-zone { left: 0; }
+        #right-zone { right: 0; }
+
+        /* Virtual Joystick */
+        #joystick-container {
+            position: absolute;
+            bottom: 50px; left: 50px;
+            width: 100px; height: 100px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            display: none; /* Hidden until touched */
+            pointer-events: none;
+        }
+        #joystick-knob {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        /* Top Bar */
+        #top-bar {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%;
+            height: 40px;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            box-sizing: border-box;
+            font-family: sans-serif;
+            pointer-events: auto;
+        }
+
+        /* Buttons */
+        .game-btn {
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-weight: bold;
+            font-family: sans-serif;
+            color: #333;
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+        .game-btn:active {
+            background: #ccc;
+        }
+
+        #order-btn {
+            /* Positioned in top bar or absolute? Prompt says top corner. Let's put in Top Bar right side or absolute. */
+            /* Actually, top bar handles money. Let's put order button just below top bar right side or inside it. */
+            /* Prompt: "Screen top corner: Order Button". Top Right is good. */
+        }
+
+        #action-btn {
+            position: absolute;
+            bottom: 40px; right: 40px;
+            width: 120px;
+            height: 60px;
+            font-size: 18px;
+            display: none; /* Hidden by default */
+            z-index: 20;
+        }
+
+    </style>
+</head>
+<body>
+
+<div id="landscape-warning">
+    <h1>Please Rotate Your Device</h1>
+    <p>This game is best played in Landscape Mode.</p>
+</div>
+
+<div id="game-container">
+    <div id="ui-layer">
+        <div id="top-bar">
+            <div id="money-display">Money: $100</div>
+            <button id="order-btn" class="game-btn">Order ($20)</button>
+        </div>
+
+        <div id="crosshair"></div>
+
+        <div id="left-zone" class="control-zone"></div>
+        <div id="right-zone" class="control-zone"></div>
+
+        <div id="joystick-container">
+            <div id="joystick-knob"></div>
+        </div>
+
+        <button id="action-btn" class="game-btn">Action</button>
+    </div>
+</div>
+
+<!-- Three.js CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+    // --- 1. Scene Setup ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+    scene.fog = new THREE.Fog(0x87CEEB, 1, 50);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.rotation.order = 'YXZ'; // Important for FPS camera to avoid gimbal lock
+    camera.position.set(0, 1.6, 5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.getElementById('game-container').appendChild(renderer.domElement);
+
+    // --- Environment: The Shop ---
+    const textureLoader = new THREE.TextureLoader();
+
+    // Floor
+    const floorGeometry = new THREE.PlaneGeometry(20, 20);
+    const floorMaterial = new THREE.MeshStandardMaterial({
+        color: 0xcccccc,
+        roughness: 0.8
+    });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    floor.userData = { type: 'floor' };
+    scene.add(floor);
+
+    // Ceiling
+    const ceilingGeometry = new THREE.PlaneGeometry(20, 20);
+    const ceilingMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide
+    });
+    const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = 4;
+    scene.add(ceiling);
+
+    // Collision Objects List
+    const colliders = [];
+
+    // Walls function
+    function createWall(width, height, depth, x, y, z, color = 0xeeeeee) {
+        const geometry = new THREE.BoxGeometry(width, height, depth);
+        const material = new THREE.MeshStandardMaterial({ color: color });
+        const wall = new THREE.Mesh(geometry, material);
+        wall.position.set(x, y, z);
+        wall.receiveShadow = true;
+        wall.castShadow = true;
+        scene.add(wall);
+        colliders.push(wall); // Add to colliders
+        return wall;
+    }
+
+    // Creating walls
+    createWall(20, 4, 1, 0, 2, -10); // Back
+    createWall(20, 4, 1, 0, 2, 10);  // Front
+    createWall(1, 4, 20, -10, 2, 0); // Left
+    createWall(1, 4, 20, 10, 2, 0);  // Right
+
+    // --- Lighting ---
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    function addLight(x, z) {
+        const light = new THREE.PointLight(0xffffee, 0.8, 15);
+        light.position.set(x, 3.8, z);
+        light.castShadow = true;
+        scene.add(light);
+
+        const bulb = new THREE.Mesh(
+            new THREE.SphereGeometry(0.2, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffffee })
+        );
+        bulb.position.set(x, 3.9, z);
+        scene.add(bulb);
+    }
+
+    addLight(-5, -5);
+    addLight(5, -5);
+    addLight(-5, 5);
+    addLight(5, 5);
+
+
+    // --- Furniture ---
+    const shelves = [];
+
+    function createShelf(x, z, rotationY = 0) {
+        const group = new THREE.Group();
+        const geometry = new THREE.BoxGeometry(4, 2, 1);
+        const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const shelf = new THREE.Mesh(geometry, material);
+        shelf.position.y = 1;
+        shelf.castShadow = true;
+        shelf.receiveShadow = true;
+        shelf.userData = { type: 'shelf' }; // Identify as shelf for raycasting
+
+        // For collision
+        const collisionBox = new THREE.Mesh(
+            new THREE.BoxGeometry(4, 2, 1),
+            new THREE.MeshBasicMaterial({ visible: false })
+        );
+        collisionBox.position.set(x, 1, z);
+        collisionBox.rotation.y = rotationY;
+        scene.add(collisionBox);
+        colliders.push(collisionBox);
+
+        group.add(shelf);
+        group.position.set(x, 0, z);
+        group.rotation.y = rotationY;
+        group.userData = { type: 'shelfGroup' };
+
+        scene.add(group);
+        shelves.push(group);
+        return group;
+    }
+
+    createShelf(-5, -2);
+    createShelf(5, -2);
+    createShelf(0, -6, Math.PI / 2);
+
+    // Checkout Counter
+    const counterGroup = new THREE.Group();
+    const counterGeo = new THREE.BoxGeometry(3, 1.2, 1.5);
+    const counterMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+    const counter = new THREE.Mesh(counterGeo, counterMat);
+    counter.position.y = 0.6;
+    counter.castShadow = true;
+    counter.receiveShadow = true;
+    counter.userData = { type: 'shelf' }; // Allow placing items on counter
+    counterGroup.add(counter);
+    counterGroup.position.set(4, 0, 6);
+    counterGroup.rotation.y = -Math.PI / 4;
+    scene.add(counterGroup);
+
+    // Collision for counter
+    const counterCollision = new THREE.Mesh(new THREE.BoxGeometry(3, 1.2, 1.5), new THREE.MeshBasicMaterial({visible:false}));
+    counterCollision.position.set(4, 0.6, 6);
+    counterCollision.rotation.y = -Math.PI / 4;
+    scene.add(counterCollision);
+    colliders.push(counterCollision);
+
+    // Spawn Pad
+    const padGeo = new THREE.PlaneGeometry(2, 2);
+    const padMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 });
+    const spawnPad = new THREE.Mesh(padGeo, padMat);
+    spawnPad.rotation.x = -Math.PI / 2;
+    spawnPad.position.set(-8, 0.02, 8);
+    spawnPad.userData = { type: 'spawnPad' };
+    scene.add(spawnPad);
+
+
+    // --- 3. Interaction & Economy ---
+
+    let money = 100;
+    let heldItem = null;
+    const products = []; // List of product meshes in scene
+    const customers = [];
+    const customerSpawnPoint = new THREE.Vector3(0, 0, 15);
+    const checkoutPosition = new THREE.Vector3(2.5, 0, 7.5); // In front of counter
+
+    const moneyDisplay = document.getElementById('money-display');
+    const orderBtn = document.getElementById('order-btn');
+    const actionBtn = document.getElementById('action-btn');
+
+    function updateMoney(amount) {
+        money += amount;
+        moneyDisplay.innerText = `Money: $${money}`;
+    }
+
+    // Raycaster for interaction
+    const raycaster = new THREE.Raycaster();
+    const center = new THREE.Vector2(0, 0);
+    let interactTarget = null; // Object currently looking at
+
+    // Order Logic
+    orderBtn.addEventListener('click', () => {
+        if (money >= 20) {
+            updateMoney(-20);
+            spawnProduct();
+        } else {
+            alert("Not enough money!");
+        }
+    });
+
+    function spawnProduct() {
+        const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+        const material = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff });
+        const product = new THREE.Mesh(geometry, material);
+
+        // Random position on spawn pad (-8, 8) +/- 0.5
+        const offsetX = (Math.random() - 0.5) * 1.5;
+        const offsetZ = (Math.random() - 0.5) * 1.5;
+
+        product.position.set(-8 + offsetX, 0.5, 8 + offsetZ);
+        product.castShadow = true;
+        product.receiveShadow = true;
+        product.userData = { type: 'product', price: 30 }; // Sell price
+
+        scene.add(product);
+        products.push(product);
+    }
+
+    // Action Button Logic
+    actionBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent touch from firing joystick/look
+        if (!interactTarget) return;
+
+        const type = interactTarget.userData.type;
+
+        if (type === 'customer' && interactTarget.userData.state === 'WAITING') {
+            // Checkout Logic
+            updateMoney(30);
+            interactTarget.userData.state = 'LEAVING';
+            // Simple feedback
+            const feedback = document.createElement('div');
+            feedback.innerText = "+$30";
+            feedback.style.position = 'absolute';
+            feedback.style.top = '50%';
+            feedback.style.left = '50%';
+            feedback.style.color = 'green';
+            feedback.style.fontSize = '24px';
+            feedback.style.fontWeight = 'bold';
+            feedback.style.animation = 'fadeOut 1s forwards';
+            document.body.appendChild(feedback);
+            setTimeout(() => feedback.remove(), 1000);
+
+            // Interaction complete, hide button immediately
+            interactTarget = null;
+            updateActionUI();
+        }
+        else if (type === 'product' && !heldItem) {
+            // Pick Up
+            heldItem = interactTarget;
+
+            // Remove from products list so customers don't try to buy it from hand
+            const index = products.indexOf(heldItem);
+            if (index > -1) products.splice(index, 1);
+
+            // Attach to camera
+            scene.remove(heldItem); // It might be in scene
+            if (heldItem.parent) heldItem.parent.remove(heldItem); // Safety
+
+            camera.add(heldItem);
+            heldItem.position.set(0.3, -0.3, -0.5); // Hand position
+            heldItem.rotation.set(0, 0, 0);
+        }
+        else if (type === 'shelf' && heldItem) {
+            // Place on Shelf
+            const shelf = interactTarget;
+
+            camera.remove(heldItem);
+            scene.add(heldItem);
+            products.push(heldItem); // Add back to products list
+
+            // Re-calculate intersection for precision
+            raycaster.setFromCamera(center, camera);
+            const intersects = raycaster.intersectObject(interactTarget);
+
+            if (intersects.length > 0) {
+                const point = intersects[0].point;
+                heldItem.position.set(point.x, point.y + 0.25, point.z);
+            } else {
+                const shelfWorldPos = new THREE.Vector3();
+                shelf.getWorldPosition(shelfWorldPos);
+                heldItem.position.set(shelfWorldPos.x, 2.25, shelfWorldPos.z);
+            }
+
+            heldItem.rotation.set(0, 0, 0);
+            heldItem = null;
+        }
+        else if (type === 'floor' && heldItem) {
+            // Drop Logic
+             camera.remove(heldItem);
+             scene.add(heldItem);
+             products.push(heldItem); // Add back to products list
+
+             raycaster.setFromCamera(center, camera);
+             const intersects = raycaster.intersectObject(interactTarget);
+             if (intersects.length > 0) {
+                 heldItem.position.copy(intersects[0].point);
+                 heldItem.position.y += 0.25;
+             } else {
+                 const worldPos = new THREE.Vector3();
+                 heldItem.getWorldPosition(worldPos);
+                 heldItem.position.copy(worldPos);
+                 heldItem.position.y = 0.25;
+             }
+             heldItem = null;
+        }
+
+        updateActionUI(); // Refresh state immediately
+    });
+
+    function updateActionUI() {
+        // Raycast loop updates this constantly, but we call it here to handle immediate click feedback
+    }
+
+    // --- 4. Customer AI ---
+
+    class Customer {
+        constructor() {
+            this.mesh = new THREE.Group();
+
+            // Body
+            const bodyGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.6, 12);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 0.8;
+            body.castShadow = true;
+            body.receiveShadow = true;
+            this.mesh.add(body);
+
+            // Head
+            const headGeo = new THREE.SphereGeometry(0.25, 12, 12);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // Skin tone
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.y = 1.75;
+            this.mesh.add(head);
+
+            this.mesh.position.copy(customerSpawnPoint);
+            this.mesh.userData = { type: 'customer', state: 'SPAWNING', customer: this };
+
+            scene.add(this.mesh);
+
+            this.speed = 2.5; // Meters per second
+            this.target = null;
+            this.waitTime = 0;
+
+            this.state = 'MOVING_TO_SHELF';
+            this.findShelf();
+        }
+
+        findShelf() {
+            // Pick a random shelf location
+            const shelfIndex = Math.floor(Math.random() * shelves.length);
+            const shelf = shelves[shelfIndex];
+            // Target is slightly in front of the shelf
+            // Shelf is at (x, 0, z). We need to know where "front" is.
+            // Simple logic: If shelf x < 0, stand at x + 1. If shelf x > 0, stand at x - 1.
+            const sPos = shelf.position;
+            // Hacky target position based on shelf positions
+            if (sPos.z < -4) { // Back shelf
+                this.target = new THREE.Vector3(sPos.x, 0, sPos.z + 1.5);
+            } else {
+                 this.target = new THREE.Vector3(sPos.x > 0 ? sPos.x - 1.5 : sPos.x + 1.5, 0, sPos.z);
+            }
+        }
+
+        update(delta) {
+            const pos = this.mesh.position;
+
+            if (this.state === 'MOVING_TO_SHELF') {
+                if (this.moveTo(this.target, delta)) {
+                    this.state = 'TAKING_ITEM';
+                    this.waitTime = 2.0;
+                }
+            }
+            else if (this.state === 'TAKING_ITEM') {
+                this.waitTime -= delta;
+                if (this.waitTime <= 0) {
+                    // Try to find a product nearby to "buy" (remove)
+                    let foundProduct = null;
+                    let minDist = 2.0;
+                    for (let i = products.length - 1; i >= 0; i--) {
+                        const prod = products[i];
+                        const d = prod.position.distanceTo(pos);
+                        if (d < minDist) {
+                            minDist = d;
+                            foundProduct = prod;
+                        }
+                    }
+
+                    if (foundProduct) {
+                        // Safe removal
+                        if (foundProduct.parent) foundProduct.parent.remove(foundProduct);
+
+                        const idx = products.indexOf(foundProduct);
+                        if (idx > -1) products.splice(idx, 1);
+
+                        // Visual: hold item?
+                        const item = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), foundProduct.material);
+                        item.position.set(0.3, 1, 0.3);
+                        this.mesh.add(item);
+                    }
+
+                    this.state = 'MOVING_TO_CHECKOUT';
+                    this.target = checkoutPosition.clone();
+                }
+            }
+            else if (this.state === 'MOVING_TO_CHECKOUT') {
+                if (this.moveTo(this.target, delta)) {
+                    this.state = 'WAITING';
+                    this.mesh.userData.state = 'WAITING'; // Sync for raycast
+                    // Turn to face counter
+                    this.mesh.lookAt(4, 0.8, 6);
+                }
+            }
+            else if (this.state === 'WAITING') {
+                // Wait for player interaction (handled in main loop via raycast)
+                // this.mesh.userData.state is updated by player click
+                if (this.mesh.userData.state === 'LEAVING') {
+                    this.state = 'LEAVING';
+                    this.target = customerSpawnPoint.clone();
+                }
+            }
+            else if (this.state === 'LEAVING') {
+                if (this.moveTo(this.target, delta)) {
+                    this.despawn();
+                    return false; // Removed
+                }
+            }
+            return true; // Still active
+        }
+
+        moveTo(target, delta) {
+            const direction = new THREE.Vector3().subVectors(target, this.mesh.position);
+            direction.y = 0;
+            const dist = direction.length();
+
+            if (dist < 0.1) return true; // Reached
+
+            direction.normalize();
+            this.mesh.position.addScaledVector(direction, this.speed * delta);
+
+            // Look at target
+            const lookTarget = target.clone();
+            lookTarget.y = this.mesh.position.y;
+            this.mesh.lookAt(lookTarget);
+
+            return false;
+        }
+
+        despawn() {
+            scene.remove(this.mesh);
+        }
+    }
+
+    // Spawner
+    let spawnTimer = 0;
+    const spawnInterval = 10; // Seconds
+
+    // --- 2. Mobile Controls ---
+
+    // State
+    const player = {
+        speed: 0.1,
+        velocity: new THREE.Vector3(),
+        direction: new THREE.Vector3(),
+        rotation: new THREE.Euler(0, 0, 0, 'YXZ')
+    };
+
+    // Joystick Variables
+    let moveForward = 0; // -1 to 1
+    let moveRight = 0;   // -1 to 1
+    let joystickActive = false;
+    let joystickTouchId = null;
+    let joystickCenter = { x: 0, y: 0 };
+    const maxJoystickRadius = 40;
+
+    // Look Variables
+    let lookTouchId = null;
+    let lastLookX = 0;
+    let lastLookY = 0;
+    const lookSensitivity = 0.005;
+
+    // UI Elements
+    const joystickContainer = document.getElementById('joystick-container');
+    const joystickKnob = document.getElementById('joystick-knob');
+    const leftZone = document.getElementById('left-zone');
+    const rightZone = document.getElementById('right-zone');
+
+    // --- Left Zone: Movement (Joystick) ---
+    leftZone.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const touch = e.changedTouches[0];
+        joystickTouchId = touch.identifier;
+        joystickActive = true;
+
+        // Set joystick position to touch start
+        joystickCenter.x = touch.clientX;
+        joystickCenter.y = touch.clientY;
+
+        joystickContainer.style.display = 'block';
+        joystickContainer.style.left = (touch.clientX - 50) + 'px';
+        joystickContainer.style.top = (touch.clientY - 50) + 'px';
+        joystickKnob.style.transform = `translate(-50%, -50%)`;
+
+        moveForward = 0;
+        moveRight = 0;
+    }, { passive: false });
+
+    leftZone.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (!joystickActive) return;
+
+        let touch = null;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === joystickTouchId) {
+                touch = e.changedTouches[i];
+                break;
+            }
+        }
+        if (!touch) return;
+
+        const deltaX = touch.clientX - joystickCenter.x;
+        const deltaY = touch.clientY - joystickCenter.y;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+        const clampedDistance = Math.min(distance, maxJoystickRadius);
+        const angle = Math.atan2(deltaY, deltaX);
+
+        const knobX = Math.cos(angle) * clampedDistance;
+        const knobY = Math.sin(angle) * clampedDistance;
+
+        joystickKnob.style.transform = `translate(calc(-50% + ${knobX}px), calc(-50% + ${knobY}px))`;
+
+        // Normalize inputs (-1 to 1)
+        moveRight = knobX / maxJoystickRadius;
+        moveForward = -(knobY / maxJoystickRadius); // Inverted Y for forward
+    }, { passive: false });
+
+    const endJoystick = (e) => {
+        e.preventDefault();
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === joystickTouchId) {
+                joystickActive = false;
+                joystickTouchId = null;
+                joystickContainer.style.display = 'none';
+                moveForward = 0;
+                moveRight = 0;
+                break;
+            }
+        }
+    };
+    leftZone.addEventListener('touchend', endJoystick);
+    leftZone.addEventListener('touchcancel', endJoystick);
+
+    // --- Right Zone: Look (Camera Rotation) ---
+    rightZone.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const touch = e.changedTouches[0];
+        lookTouchId = touch.identifier;
+        lastLookX = touch.clientX;
+        lastLookY = touch.clientY;
+    }, { passive: false });
+
+    rightZone.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        let touch = null;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === lookTouchId) {
+                touch = e.changedTouches[i];
+                break;
+            }
+        }
+        if (!touch) return;
+
+        const deltaX = touch.clientX - lastLookX;
+        const deltaY = touch.clientY - lastLookY;
+
+        camera.rotation.y -= deltaX * lookSensitivity;
+        camera.rotation.x -= deltaY * lookSensitivity;
+
+        // Clamp Pitch (Up/Down) to avoid flipping
+        camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+
+        lastLookX = touch.clientX;
+        lastLookY = touch.clientY;
+    }, { passive: false });
+
+    const endLook = (e) => {
+        e.preventDefault();
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === lookTouchId) {
+                lookTouchId = null;
+                break;
+            }
+        }
+    };
+    rightZone.addEventListener('touchend', endLook);
+    rightZone.addEventListener('touchcancel', endLook);
+
+
+    // --- Collision Logic (Simple AABB) ---
+    function checkCollision(position) {
+        const playerRadius = 0.5; // Approximate player width
+        const playerBox = new THREE.Box3();
+        playerBox.min.set(position.x - playerRadius, position.y - 1, position.z - playerRadius);
+        playerBox.max.set(position.x + playerRadius, position.y + 1, position.z + playerRadius);
+
+        for (const collider of colliders) {
+            const colliderBox = new THREE.Box3().setFromObject(collider);
+            if (playerBox.intersectsBox(colliderBox)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // --- Game Loop ---
+    const clock = new THREE.Clock();
+    console.log("Game initialized, starting loop");
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        const delta = clock.getDelta(); // Time between frames
+
+        // Movement Logic
+        if (moveForward !== 0 || moveRight !== 0) {
+            // Calculate forward and right vectors based on camera rotation (Y-axis only)
+            const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), camera.rotation.y);
+            const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), camera.rotation.y);
+
+            // Create movement vector
+            const moveVec = new THREE.Vector3();
+            moveVec.addScaledVector(forward, moveForward); // Forward is -Z relative to camera
+            moveVec.addScaledVector(right, moveRight);
+
+            // Normalize direction but keep magnitude for analog control
+            const inputLen = Math.min(1, Math.sqrt(moveForward*moveForward + moveRight*moveRight));
+            if (inputLen > 0) {
+                moveVec.normalize().multiplyScalar(player.speed * inputLen);
+            }
+
+            // Proposed new position
+            const newPos = camera.position.clone().add(moveVec);
+
+            // Simple Collision Check (X axis)
+            const testPosX = camera.position.clone();
+            testPosX.x = newPos.x;
+            if (!checkCollision(testPosX)) {
+                camera.position.x = newPos.x;
+            }
+
+            // Simple Collision Check (Z axis)
+            const testPosZ = camera.position.clone();
+            testPosZ.z = newPos.z;
+            if (!checkCollision(testPosZ)) {
+                camera.position.z = newPos.z;
+            }
+        }
+
+        // --- Interaction Raycast Loop ---
+        raycaster.setFromCamera(center, camera);
+
+        // We only interact with visible things.
+        // If holding item, we ignore the held item itself (which is child of camera).
+        // Filter out held item from raycast candidates if needed, but since it's child of camera and we raycast against scene.children (except if recursively), it might be tricky.
+        // Actually scene.children contains camera? No.
+        // But if heldItem is child of camera, it is NOT in scene.children direct list.
+        // However, we should be careful.
+
+        const intersects = raycaster.intersectObjects(scene.children, true);
+
+        let found = null;
+        for (let i = 0; i < intersects.length; i++) {
+            const obj = intersects[i].object;
+            // Skip invisible collision boxes
+            if (obj.visible === false) continue;
+            // Skip Held Item
+            if (heldItem && (obj === heldItem || obj.parent === heldItem)) continue;
+
+            if (obj.userData.type) {
+                found = obj;
+                break;
+            }
+        }
+
+        interactTarget = found;
+
+        // Update Customer Logic
+        spawnTimer += delta;
+        if (spawnTimer > spawnInterval) {
+            if (customers.length < 5) {
+                const customer = new Customer();
+                customers.push(customer);
+                spawnTimer = 0;
+            }
+        }
+
+        for (let i = customers.length - 1; i >= 0; i--) {
+            const active = customers[i].update(delta);
+            if (!active) {
+                customers.splice(i, 1);
+            }
+        }
+
+        // Update Action Button UI
+        if (interactTarget) {
+            const type = interactTarget.userData.type;
+            if (type === 'customer' && interactTarget.userData.state === 'WAITING') {
+                actionBtn.style.display = 'block';
+                actionBtn.innerText = 'Checkout';
+            } else if (type === 'product' && !heldItem) {
+                actionBtn.style.display = 'block';
+                actionBtn.innerText = 'Pick Up';
+            } else if ((type === 'shelf' || type === 'floor') && heldItem) {
+                actionBtn.style.display = 'block';
+                actionBtn.innerText = 'Place';
+            } else {
+                actionBtn.style.display = 'none';
+            }
+        } else {
+            actionBtn.style.display = 'none';
+        }
+
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    // --- Resize Handler ---
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+</script>
+</body>
+</html>
