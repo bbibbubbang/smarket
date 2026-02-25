@@ -932,7 +932,7 @@
             cashierTimer += delta;
             if (cashierTimer > cashierProcessTime) {
                 // Checkout!
-                if (customerAtCheckout.customer.hasItem) {
+                if (customerAtCheckout.hasItem) {
                     updateMoney(30);
                     // Feedback
                     const feedback = document.createElement('div');
