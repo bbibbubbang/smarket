@@ -183,6 +183,14 @@
         </div>
 
         <button id="action-btn" class="game-btn">Action</button>
+
+        <!-- Price Setting Modal -->
+        <div id="price-modal" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:white; padding:20px; border-radius:10px; z-index:100; pointer-events:auto; text-align:center;">
+            <h3>Set Price</h3>
+            <input type="number" id="price-input" style="font-size:18px; width:80px; margin-bottom:10px;"><br>
+            <button id="price-save-btn" class="game-btn">Save</button>
+            <button id="price-close-btn" class="game-btn" style="background:#fcc;">Cancel</button>
+        </div>
     </div>
 </div>
 
@@ -278,12 +286,47 @@
     addLight(5, 5);
 
 
+    // --- Data Structures ---
+    const ITEM_TYPES = {
+        GUM: {
+            id: 'gum',
+            size: 1, // 1 slot
+            storageType: 'normal',
+            boxCapacity: 16, // Enough for 1 full tier (16 slots)
+            defaultPrice: 5,
+            color: 0xffa500 // Orange box
+        }
+    };
+
+    class ShelfData {
+        constructor(id, type = 'normal', levels = 4) {
+            this.id = id;
+            this.type = type;
+            this.levels = levels;
+            // Manage items dynamically, but to enforce size/slot we need slots.
+            // 4 levels, 1-indexed (1,2,3,4) to match `tier` in userData
+            this.tiers = {};
+            for (let i = 1; i <= levels; i++) {
+                this.tiers[i] = {
+                    slots: new Array(16).fill(null), // 16 slots per tier
+                    setPrice: 0,
+                    itemType: null, // What item is on this tier
+                    count: 0 // How many items total
+                };
+            }
+        }
+    }
+
+    let shelfIdCounter = 0;
+
     // --- Furniture ---
     const shelves = [];
 
     function createShelf(x, z, rotationY = 0) {
         const group = new THREE.Group();
         const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+
+        const sData = new ShelfData(shelfIdCounter++);
 
         // Create 4 tiers
         for (let i = 1; i <= 4; i++) {
@@ -293,7 +336,7 @@
             shelf.position.y = i * 0.5;
             shelf.castShadow = true;
             shelf.receiveShadow = true;
-            shelf.userData = { type: 'shelf', tier: i };
+            shelf.userData = { type: 'shelf', tier: i, shelfData: sData };
             group.add(shelf);
         }
 
@@ -319,7 +362,7 @@
 
         group.position.set(x, 0, z);
         group.rotation.y = rotationY;
-        group.userData = { type: 'shelfGroup' };
+        group.userData = { type: 'shelfGroup', shelfData: sData };
 
         scene.add(group);
         shelves.push(group);
@@ -436,21 +479,29 @@
     });
 
     function spawnProduct() {
-        const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-        const material = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff });
-        const product = new THREE.Mesh(geometry, material);
+        const geometry = new THREE.BoxGeometry(0.8, 0.6, 0.8); // Make the box larger
+        const material = new THREE.MeshStandardMaterial({ color: ITEM_TYPES.GUM.color });
+        const box = new THREE.Mesh(geometry, material);
 
         // Random position on spawn pad (-8, 8) +/- 0.5
         const offsetX = (Math.random() - 0.5) * 1.5;
         const offsetZ = (Math.random() - 0.5) * 1.5;
 
-        product.position.set(-8 + offsetX, 0.5, 8 + offsetZ);
-        product.castShadow = true;
-        product.receiveShadow = true;
-        product.userData = { type: 'product', price: 30, isResting: false, velocity: new THREE.Vector3(0, 0, 0) }; // Sell price
+        box.position.set(-8 + offsetX, 0.5, 8 + offsetZ);
+        box.castShadow = true;
+        box.receiveShadow = true;
 
-        scene.add(product);
-        products.push(product);
+        box.userData = {
+            type: 'product', // We keep 'product' for the interaction raycast
+            isBox: true,
+            itemType: ITEM_TYPES.GUM,
+            capacity: ITEM_TYPES.GUM.boxCapacity,
+            isResting: false,
+            velocity: new THREE.Vector3(0, 0, 0)
+        };
+
+        scene.add(box);
+        products.push(box);
     }
 
     function getValidPlacement(target) {
@@ -469,6 +520,18 @@
             const shelfGroup = target.parent;
             if (!shelfGroup || shelfGroup.userData.type !== 'shelfGroup') return null;
 
+            const shelfData = shelfGroup.userData.shelfData;
+            const tierNum = target.userData.tier;
+            const tierData = shelfData.tiers[tierNum];
+
+            // If we are holding a box, check if tier allows this item type
+            if (heldItem.userData.isBox) {
+                const itemType = heldItem.userData.itemType;
+                if (tierData.itemType !== null && tierData.itemType !== itemType) {
+                    return null; // Mixed items not allowed
+                }
+            }
+
             // Convert to local space
             const localPoint = shelfGroup.worldToLocal(point.clone());
 
@@ -482,19 +545,23 @@
 
             // Use the tier's Y position
             const tierY = target.position.y;
-            localPoint.set(clampedX, tierY + 0.25, clampedZ);
+            localPoint.set(clampedX, tierY + 0.15, clampedZ);
 
             // Convert back to world
             const worldPos = localPoint.applyMatrix4(shelfGroup.matrixWorld);
 
-            // Check overlap
+            // Calculate Grid Index based on local snapped positions
+            // x: -1.5, -0.5, 0.5, 1.5 -> maps to col 0..3 (ish)
+            // z: -0.25, 0.25 -> maps to row 0..1 (ish)
+            // Let's use simpler overlap check, but update tierData
+            // Find if there's an exact overlap using distance
             for (const p of products) {
                 if (p === heldItem) continue;
-                if (p.position.distanceTo(worldPos) < 0.4) {
+                if (p.position.distanceTo(worldPos) < 0.2) {
                     return null; // Occupied
                 }
             }
-            return { pos: worldPos, rot: shelfGroup.rotation };
+            return { pos: worldPos, rot: shelfGroup.rotation, tierData: tierData, tierNum: tierNum, shelfData: shelfData };
         }
         else if (type === 'floor') {
             if (intersects[0].distance > 3) return null;
@@ -513,6 +580,27 @@
 
         return null;
     }
+
+    let currentPricingTier = null;
+    let currentPricingShelfData = null;
+
+    document.getElementById('price-save-btn').addEventListener('click', () => {
+        if (currentPricingTier && currentPricingShelfData) {
+            const newPrice = parseFloat(document.getElementById('price-input').value);
+            if (!isNaN(newPrice) && newPrice > 0) {
+                currentPricingShelfData.tiers[currentPricingTier].setPrice = newPrice;
+            }
+        }
+        document.getElementById('price-modal').style.display = 'none';
+        currentPricingTier = null;
+        currentPricingShelfData = null;
+    });
+
+    document.getElementById('price-close-btn').addEventListener('click', () => {
+        document.getElementById('price-modal').style.display = 'none';
+        currentPricingTier = null;
+        currentPricingShelfData = null;
+    });
 
     // Action Button Logic
     actionBtn.addEventListener('click', (e) => {
@@ -548,6 +636,29 @@
             heldItem = interactTarget;
             heldItem.userData.isResting = false; // Physics activation
 
+            // Update ShelfData if picking up from a shelf
+            const sData = heldItem.userData.shelfData;
+            const tierNum = heldItem.userData.tierNum;
+            if (sData && tierNum) {
+                const tierData = sData.tiers[tierNum];
+                tierData.count -= 1;
+                if (tierData.count <= 0) {
+                    tierData.itemType = null;
+                    tierData.setPrice = 0;
+                }
+                // Remove from slots
+                for(let i=0; i<tierData.slots.length; i++) {
+                    if(tierData.slots[i] === heldItem) {
+                        tierData.slots[i] = null;
+                        break;
+                    }
+                }
+
+                // Clear the shelf data from the item since it's now in hand
+                heldItem.userData.shelfData = null;
+                heldItem.userData.tierNum = null;
+            }
+
             // Remove from products list so customers don't try to buy it from hand
             // (Actually we keep it in list for physics loop, but handle 'held' state there)
             // But existing code removed it. Let's keep it consistent: remove from scene parent, add to camera.
@@ -572,24 +683,90 @@
             heldItem.position.set(0.3, -0.3, -0.5);
             heldItem.rotation.set(0, 0, 0);
         }
+        else if (type === 'shelf' && !heldItem) {
+            // Open Price Setting UI if looking at a shelf with items
+            const shelfGroup = interactTarget.parent;
+            if (shelfGroup && shelfGroup.userData.type === 'shelfGroup') {
+                const sData = shelfGroup.userData.shelfData;
+                const tierNum = interactTarget.userData.tier;
+                if (sData && tierNum) {
+                    const tierData = sData.tiers[tierNum];
+                    if (tierData.itemType !== null) {
+                        currentPricingTier = tierNum;
+                        currentPricingShelfData = sData;
+                        const modal = document.getElementById('price-modal');
+                        const input = document.getElementById('price-input');
+                        input.value = tierData.setPrice > 0 ? tierData.setPrice : tierData.itemType.defaultPrice;
+                        modal.style.display = 'block';
+                    }
+                }
+            }
+        }
         else if ((type === 'shelf' || type === 'floor') && heldItem) {
             // Place / Drop using getValidPlacement
             const valid = getValidPlacement(interactTarget);
             if (valid) {
-                camera.remove(heldItem);
-                scene.add(heldItem);
-                products.push(heldItem);
+                if (heldItem.userData.isBox && type === 'shelf') {
+                    // Place 1 item from box
+                    if (heldItem.userData.capacity > 0) {
+                        heldItem.userData.capacity -= 1;
 
-                heldItem.position.copy(valid.pos);
-                heldItem.rotation.copy(valid.rot);
+                        // Instantiate the item mesh
+                        const geom = new THREE.BoxGeometry(0.4, 0.3, 0.4);
+                        const mat = new THREE.MeshStandardMaterial({ color: heldItem.userData.itemType.color });
+                        const itemMesh = new THREE.Mesh(geom, mat);
 
-                if (type === 'shelf') {
-                    heldItem.userData.isResting = true; // Stay on shelf
+                        itemMesh.position.copy(valid.pos);
+                        itemMesh.rotation.copy(valid.rot);
+                        itemMesh.castShadow = true;
+                        itemMesh.receiveShadow = true;
+
+                        itemMesh.userData = {
+                            type: 'product',
+                            isResting: true,
+                            itemType: heldItem.userData.itemType,
+                            shelfData: valid.shelfData,
+                            tierNum: valid.tierNum
+                        };
+
+                        // Update ShelfData
+                        valid.tierData.itemType = heldItem.userData.itemType;
+                        if (valid.tierData.setPrice === 0) valid.tierData.setPrice = heldItem.userData.itemType.defaultPrice;
+                        valid.tierData.count += 1;
+                        // Add to slots logic if strict slot array is needed
+                        for(let i=0; i<valid.tierData.slots.length; i++) {
+                            if(valid.tierData.slots[i] === null) {
+                                valid.tierData.slots[i] = itemMesh;
+                                break;
+                            }
+                        }
+
+                        scene.add(itemMesh);
+                        products.push(itemMesh);
+
+                        // If box empty, remove it
+                        if (heldItem.userData.capacity <= 0) {
+                            camera.remove(heldItem);
+                            // It was already removed from scene/products on pickup
+                            heldItem = null;
+                        }
+                    }
                 } else {
-                    heldItem.userData.isResting = false; // Fall if dropped on floor (though it's at y=0.25, so loop will set resting)
-                }
+                    // Standard place/drop (e.g. dropping box on floor)
+                    camera.remove(heldItem);
+                    scene.add(heldItem);
+                    products.push(heldItem);
 
-                heldItem = null;
+                    heldItem.position.copy(valid.pos);
+                    heldItem.rotation.copy(valid.rot);
+
+                    if (type === 'shelf') {
+                        heldItem.userData.isResting = true;
+                    } else {
+                        heldItem.userData.isResting = false;
+                    }
+                    heldItem = null;
+                }
             }
         }
 
@@ -598,6 +775,41 @@
 
     function updateActionUI() {
         // Raycast loop updates this constantly, but we call it here to handle immediate click feedback
+        if (interactTarget) {
+            const type = interactTarget.userData.type;
+            if (type === 'customer' && interactTarget.userData.state === 'WAITING') {
+                actionBtn.style.display = 'block';
+                actionBtn.innerText = 'Checkout';
+            } else if (type === 'product' && !heldItem) {
+                actionBtn.style.display = 'block';
+                actionBtn.innerText = 'Pick Up';
+            } else if ((type === 'shelf' || type === 'floor') && heldItem) {
+                if (getValidPlacement(interactTarget)) {
+                    actionBtn.style.display = 'block';
+                    actionBtn.innerText = 'Place';
+                } else {
+                    actionBtn.style.display = 'none';
+                }
+            } else if (type === 'shelf' && !heldItem) {
+                const shelfGroup = interactTarget.parent;
+                if (shelfGroup && shelfGroup.userData.type === 'shelfGroup') {
+                    const sData = shelfGroup.userData.shelfData;
+                    const tierNum = interactTarget.userData.tier;
+                    if (sData && tierNum && sData.tiers[tierNum].itemType !== null) {
+                        actionBtn.style.display = 'block';
+                        actionBtn.innerText = 'Set Price';
+                    } else {
+                        actionBtn.style.display = 'none';
+                    }
+                } else {
+                    actionBtn.style.display = 'none';
+                }
+            } else {
+                actionBtn.style.display = 'none';
+            }
+        } else {
+            actionBtn.style.display = 'none';
+        }
     }
 
     // --- 4. Customer AI ---
@@ -631,19 +843,41 @@
             this.target = null;
             this.waitTime = 0;
             this.hasItem = false;
+            this.desiredItem = ITEM_TYPES.GUM; // Assume customer wants gum for now
+            this.heldItemPrice = 0;
 
             this.state = 'MOVING_TO_SHELF';
             this.findShelf();
         }
 
         findShelf() {
-            // Pick a random shelf location
-            const shelfIndex = Math.floor(Math.random() * shelves.length);
-            const shelf = shelves[shelfIndex];
+            // Iterate through shelves and find one with the desired item
+            let targetShelf = null;
+
+            // Gather all shelves that have the item
+            const validShelves = [];
+            for (const shelf of shelves) {
+                const sData = shelf.userData.shelfData;
+                for (let i = 1; i <= sData.levels; i++) {
+                    const tier = sData.tiers[i];
+                    if (tier.itemType === this.desiredItem && tier.count > 0) {
+                        validShelves.push(shelf);
+                        break; // Only need to know shelf has it
+                    }
+                }
+            }
+
+            if (validShelves.length > 0) {
+                targetShelf = validShelves[Math.floor(Math.random() * validShelves.length)];
+            } else {
+                // If no shelf has it, just pick a random shelf to look at
+                targetShelf = shelves[Math.floor(Math.random() * shelves.length)];
+            }
+
             // Target is slightly in front of the shelf
             // Shelf is at (x, 0, z). We need to know where "front" is.
             // Simple logic: If shelf x < 0, stand at x + 1. If shelf x > 0, stand at x - 1.
-            const sPos = shelf.position;
+            const sPos = targetShelf.position;
             // Hacky target position based on shelf positions
             if (sPos.z < -4) { // Back shelf
                 this.target = new THREE.Vector3(sPos.x, 0, sPos.z + 1.5);
@@ -667,12 +901,16 @@
                     // Try to find a product nearby to "buy" (remove)
                     let foundProduct = null;
                     let minDist = 2.0;
+
+                    // Only look for items that match desiredItem and are resting on a shelf
                     for (let i = products.length - 1; i >= 0; i--) {
                         const prod = products[i];
-                        const d = prod.position.distanceTo(pos);
-                        if (d < minDist) {
-                            minDist = d;
-                            foundProduct = prod;
+                        if (!prod.userData.isBox && prod.userData.itemType === this.desiredItem && prod.userData.shelfData) {
+                            const d = prod.position.distanceTo(pos);
+                            if (d < minDist) {
+                                minDist = d;
+                                foundProduct = prod;
+                            }
                         }
                     }
 
@@ -683,7 +921,28 @@
                         const idx = products.indexOf(foundProduct);
                         if (idx > -1) products.splice(idx, 1);
 
-                        // Visual: hold item?
+                        // Update ShelfData
+                        const sData = foundProduct.userData.shelfData;
+                        const tierNum = foundProduct.userData.tierNum;
+                        if (sData && tierNum) {
+                            const tierData = sData.tiers[tierNum];
+                            tierData.count -= 1;
+                            if (tierData.count <= 0) {
+                                tierData.itemType = null;
+                                tierData.setPrice = 0;
+                            }
+                            this.heldItemPrice = tierData.setPrice > 0 ? tierData.setPrice : this.desiredItem.defaultPrice;
+
+                            // Remove from slots array
+                            for(let i=0; i<tierData.slots.length; i++) {
+                                if(tierData.slots[i] === foundProduct) {
+                                    tierData.slots[i] = null;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Visual: hold item
                         const item = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), foundProduct.material);
                         item.position.set(0.3, 1, 0.3);
                         this.mesh.add(item);
@@ -933,10 +1192,11 @@
             if (cashierTimer > cashierProcessTime) {
                 // Checkout!
                 if (customerAtCheckout.hasItem) {
-                    updateMoney(30);
+                    const earnings = customerAtCheckout.heldItemPrice || 30; // fallback just in case
+                    updateMoney(earnings);
                     // Feedback
                     const feedback = document.createElement('div');
-                    feedback.innerText = "+$30";
+                    feedback.innerText = "+$" + earnings;
                     feedback.style.position = 'absolute';
                     feedback.style.top = '20%';
                     feedback.style.left = '50%';
@@ -1066,28 +1326,8 @@
             }
         }
 
-        // Update Action Button UI
-        if (interactTarget) {
-            const type = interactTarget.userData.type;
-            if (type === 'customer' && interactTarget.userData.state === 'WAITING') {
-                actionBtn.style.display = 'block';
-                actionBtn.innerText = 'Checkout';
-            } else if (type === 'product' && !heldItem) {
-                actionBtn.style.display = 'block';
-                actionBtn.innerText = 'Pick Up';
-            } else if ((type === 'shelf' || type === 'floor') && heldItem) {
-                if (getValidPlacement(interactTarget)) {
-                    actionBtn.style.display = 'block';
-                    actionBtn.innerText = 'Place';
-                } else {
-                    actionBtn.style.display = 'none';
-                }
-            } else {
-                actionBtn.style.display = 'none';
-            }
-        } else {
-            actionBtn.style.display = 'none';
-        }
+        // Update Action Button UI (Use the helper we created)
+        updateActionUI();
 
         renderer.render(scene, camera);
     }
